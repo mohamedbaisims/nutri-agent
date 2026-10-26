@@ -1,0 +1,201 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "profil",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "b00f213e-c97c-41eb-844d-aa71d1f0c649",
+      "name": "Webhook",
+      "webhookId": "111b6ccd-8109-4110-8eda-7014f3d8a2ab"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Nœud Code n8n : calcul des objectifs journaliers\n// Mode : \"Run Once for All Items\"   Langage : JavaScript\n// Traduction fidèle de calcul_objectifs.py (le Python reste la référence).\n// ============================================================\n\nconst e = $input.first().json.body || {};\n\n// ---------- Paramètres (identiques au Python) ----------\nconst FACTEURS_ACTIVITE = { sedentaire: 1.2, leger: 1.375, modere: 1.55, actif: 1.725 };\nconst OBJECTIFS = ['perte', 'maintien', 'prise'];\nconst DEFICIT_PERTE = 0.20;\nconst DEFICIT_MAX_KCAL = 500;\nconst SURPLUS_PRISE = 0.10;\nconst PROT_G_PAR_KG_PERTE = 1.8;\nconst PROT_G_PAR_KG_AUTRE = 1.6;\nconst PROT_G_PAR_KG_MIN = 1.4;\nconst LIPIDES_PART = 0.25;\nconst LIPIDES_PART_MIN = 0.20;\nconst GLUCIDES_PART_MIN = 0.45;\nconst GLUCIDES_PART_MAX = 0.65;\nconst PROT_PART_MAX = 0.35;\nconst IMC_MIN_POUR_PERTE = 18.5;\nconst SEUIL_KCAL_BAS = { F: 1200, H: 1500 }; // à confirmer sur une source officielle\nconst AGE_MIN = 18, AGE_MAX = 100;\nconst TAILLE_MIN = 120, TAILLE_MAX = 230;\nconst POIDS_MIN = 30, POIDS_MAX = 300;\n\nconst arrondi = (x) => Math.floor(x + 0.5);\n\n// ---------- Validation ----------\nfunction verifierNombre(nom, v, min, max) {\n  if (typeof v !== 'number' || !Number.isFinite(v)) return `${nom} doit être un nombre.`;\n  if (v < min || v > max) return `${nom} doit être compris entre ${min} et ${max}.`;\n  return null;\n}\n\nfunction valider(e) {\n  let err =\n    verifierNombre(\"L'âge\", e.age, AGE_MIN, AGE_MAX) ||\n    (e.sexe !== 'H' && e.sexe !== 'F' ? \"Le sexe doit être 'H' ou 'F'.\" : null) ||\n    verifierNombre('La taille (cm)', e.taille_cm, TAILLE_MIN, TAILLE_MAX) ||\n    verifierNombre('Le poids (kg)', e.poids_kg, POIDS_MIN, POIDS_MAX) ||\n    (!(e.activite in FACTEURS_ACTIVITE)\n      ? `Niveau d'activité inconnu : choisir parmi ${Object.keys(FACTEURS_ACTIVITE).sort().join(', ')}.`\n      : null) ||\n    (!OBJECTIFS.includes(e.objectif)\n      ? `Objectif inconnu : choisir parmi ${OBJECTIFS.join(', ')}.`\n      : null);\n  if (err) return err;\n\n  const imc = e.poids_kg / Math.pow(e.taille_cm / 100, 2);\n  if (e.objectif === 'perte' && imc < IMC_MIN_POUR_PERTE) {\n    return `Objectif de perte refusé : IMC de ${imc.toFixed(1)}, inférieur à ${IMC_MIN_POUR_PERTE}.`;\n  }\n  return null;\n}\n\n// ---------- Calcul ----------\nconst erreur = valider(e);\nif (erreur) {\n  return [{ json: { ok: false, erreur } }];\n}\n\n// 1. Métabolisme de base (Mifflin-St Jeor)\nconst base = 10 * e.poids_kg + 6.25 * e.taille_cm - 5 * e.age;\nconst bmr = e.sexe === 'H' ? base + 5 : base - 161;\n\n// 2. Dépense totale\nconst tdee = bmr * FACTEURS_ACTIVITE[e.activite];\n\n// 3. Objectif calorique\nconst avertissements = [];\nlet kcal;\nif (e.objectif === 'perte') {\n  const deficit = Math.min(DEFICIT_PERTE * tdee, DEFICIT_MAX_KCAL);\n  kcal = tdee - deficit;\n  if (kcal < bmr) {\n    kcal = bmr;\n    avertissements.push('Objectif relevé au niveau du métabolisme de base (plancher de sécurité).');\n  }\n} else if (e.objectif === 'prise') {\n  kcal = tdee * (1 + SURPLUS_PRISE);\n} else {\n  kcal = tdee;\n}\n\n// 4. Répartition des macronutriments\nconst ratio = e.objectif === 'perte' ? PROT_G_PAR_KG_PERTE : PROT_G_PAR_KG_AUTRE;\nlet protKcal = Math.min(ratio * e.poids_kg * 4, PROT_PART_MAX * kcal);\nlet lipKcal = LIPIDES_PART * kcal;\nlet glucKcal = kcal - protKcal - lipKcal;\n\nif (glucKcal < GLUCIDES_PART_MIN * kcal) {\n  glucKcal = GLUCIDES_PART_MIN * kcal;\n  protKcal = kcal - lipKcal - glucKcal;                 // 1) on baisse les protéines\n  const protMinKcal = PROT_G_PAR_KG_MIN * e.poids_kg * 4;\n  if (protKcal < protMinKcal) {                         // 2) puis les lipides\n    protKcal = protMinKcal;\n    lipKcal = Math.max(kcal - protKcal - glucKcal, LIPIDES_PART_MIN * kcal);\n    glucKcal = kcal - protKcal - lipKcal;\n    if (glucKcal < GLUCIDES_PART_MIN * kcal) {\n      avertissements.push(\"Glucides sous 45 % de l'énergie malgré les corrections.\");\n    }\n  } else {\n    avertissements.push(\"Protéines réduites pour respecter la plage des glucides (45 % minimum).\");\n  }\n}\nif (glucKcal > GLUCIDES_PART_MAX * kcal) {\n  avertissements.push(\"Glucides au-dessus de 65 % de l'énergie.\");\n}\nif (kcal < SEUIL_KCAL_BAS[e.sexe]) {\n  avertissements.push(\"Objectif calorique très bas : avis d'un professionnel de santé recommandé.\");\n}\n\n// 5. Résultat (noms alignés sur les colonnes de la table users)\nreturn [{\n  json: {\n    ok: true,\n    user: {\n      age: e.age,\n      sexe: e.sexe,\n      taille_cm: e.taille_cm,\n      poids_kg: e.poids_kg,\n      activite: e.activite,\n      objectif: e.objectif,\n      kcal_cible: arrondi(kcal),\n      prot_cible: arrondi(protKcal / 4),\n      gluc_cible: arrondi(glucKcal / 4),\n      lip_cible: arrondi(lipKcal / 9),\n    },\n    details: {\n      bmr: Math.round(bmr * 100) / 100,\n      tdee: Math.round(tdee * 100) / 100,\n      gluc_pourcent: Math.round((1000 * glucKcal) / kcal) / 10,\n    },\n    avertissements,\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "id": "106b5406-fc40-458f-ad28-7c026125a51e",
+      "name": "Calcul objectifs"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "afd76ccb-ec69-4868-aa07-6c421681cd6c",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        448,
+        0
+      ],
+      "id": "de74c40b-e0aa-4cb8-9e7c-33f2e6d1e4d3",
+      "name": "Profil valide?"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO users\n  (age, sexe, taille_cm, poids_kg, activite, objectif,\n   kcal_cible, prot_cible, gluc_cible, lip_cible)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\nRETURNING id, kcal_cible, prot_cible, gluc_cible, lip_cible;",
+        "options": {
+          "queryReplacement": "={{ [ $json.user.age, $json.user.sexe, $json.user.taille_cm, $json.user.poids_kg, $json.user.activite, $json.user.objectif, $json.user.kcal_cible, $json.user.prot_cible, $json.user.gluc_cible, $json.user.lip_cible ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        672,
+        -16
+      ],
+      "id": "ac2d4f27-8b67-4e40-ba4b-aba00cab71ab",
+      "name": "Enregistrer L'utilisateur",
+      "credentials": {
+        "postgres": {
+          "id": "8PAWs094tCi0uD8t",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1152,
+        -16
+      ],
+      "id": "3d9764c8-42f4-46fd-8d80-482f3035b2d9",
+      "name": "Réponse succés"
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        672,
+        96
+      ],
+      "id": "9151a623-e90a-4052-8ffc-5adee58b314f",
+      "name": "Reponse erreur"
+    },
+    {
+      "parameters": {
+        "jsCode": "const calcul = $('Calcul objectifs').first().json;\nconst enregistre = $input.first().json;\n\nreturn [{\n  json: {\n    ok: true,\n    user_id: enregistre.id,\n    objectifs: {\n      kcal: calcul.user.kcal_cible,\n      prot: calcul.user.prot_cible,\n      gluc: calcul.user.gluc_cible,\n      lip: calcul.user.lip_cible,\n    },\n    avertissements: calcul.avertissements,\n  },\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        912,
+        -16
+      ],
+      "id": "c827ba90-a0de-40bf-85ce-58d5cdba9b52",
+      "name": "Enregistrer L'utilisateur1"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Calcul objectifs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calcul objectifs": {
+      "main": [
+        [
+          {
+            "node": "Profil valide?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Profil valide?": {
+      "main": [
+        [
+          {
+            "node": "Enregistrer L'utilisateur",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reponse erreur",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enregistrer L'utilisateur": {
+      "main": [
+        [
+          {
+            "node": "Enregistrer L'utilisateur1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enregistrer L'utilisateur1": {
+      "main": [
+        [
+          {
+            "node": "Réponse succés",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "f65c9909a14de5761c209745f86415374081da441156e132a998cd54d0892b5b"
+  }
+}

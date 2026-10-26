@@ -2,11 +2,11 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE users (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    age         SMALLINT     NOT NULL CHECK (age BETWEEN 14 AND 100),
+    age         SMALLINT     NOT NULL CHECK (age BETWEEN 18 AND 100),
     sexe        CHAR(1)      NOT NULL CHECK (sexe IN ('H', 'F')),
     taille_cm   NUMERIC(5,1) NOT NULL CHECK (taille_cm BETWEEN 150 AND 220),
     poids_kg    NUMERIC(5,1) NOT NULL CHECK (poids_kg BETWEEN 40 AND 190),
-    activite    TEXT         NOT NULL CHECK (activite IN ('sedentaire', 'leger', 'modere', 'actif', 'tres_actif')),
+    activite    TEXT         NOT NULL CHECK (activite IN ('sedentaire', 'leger', 'modere', 'actif')),
     objectif    TEXT         NOT NULL CHECK (objectif IN ('perte', 'maintien','prise')),
     kcal_cible  INTEGER,
     prot_cible  NUMERIC(6,1),
