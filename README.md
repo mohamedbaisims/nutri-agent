@@ -123,4 +123,4 @@ Chaque module est un sprint avec une Definition of Done vérifiable. On ne passe
 - [x] `docker compose up -d` démarre n8n et PostgreSQL avec pgvector
 - [x] Schéma SQL créé automatiquement (5 tables, 2 vues)
 - [x] README rédigé
-- [ ] Premier commit Git
+- [x] Premier commit Git
